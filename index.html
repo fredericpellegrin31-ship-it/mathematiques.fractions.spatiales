@@ -159,11 +159,11 @@
         
         #feedback-msg {
             position: absolute;
-            top: 40%;
+            top: 30%;
             left: 50%;
             transform: translate(-50%, -50%);
-            font-size: 3rem; 
-            font-weight: bold;
+            font-size: 4rem; 
+            font-weight: 900;
             text-align: center;
             text-shadow: 0 0 20px rgba(0,0,0,0.8);
             pointer-events: none;
@@ -172,8 +172,8 @@
             z-index: 20;
             width: 90%;
         }
-        .text-green { color: #4ade80; }
-        .text-red { color: #ef4444; }
+        .text-green { color: #4ade80; text-shadow: 0 0 20px #22c55e, 2px 2px 0px #000; }
+        .text-red { color: #ef4444; text-shadow: 0 0 20px #b91c1c, 2px 2px 0px #000; }
     </style>
 </head>
 <body>
@@ -229,30 +229,22 @@
         const canvas = document.getElementById('gameCanvas');
         const ctx = canvas.getContext('2d');
         
-        let gameState = 'START';
+        let gameState = 'START'; // START, PLAYING, CORRECTION, GAMEOVER
         let score = 0;
         let lives = 5;
-        let currentMaxDen = 4;
+        let correctionTimer = 0;
         
-        // Pool de fractions
         let fractionPool = [];
         const numWords = { 1: "un", 2: "deux", 3: "trois", 4: "quatre", 5: "cinq", 6: "six", 7: "sept" };
         const denWords = { 2: "demi", 3: "tiers", 4: "quart", 5: "cinquième", 6: "sixième", 7: "septième", 8: "huitième" };
 
         function initFractionPool(maxDenominator) {
             fractionPool = [];
-            currentMaxDen = maxDenominator;
             for (let d = 2; d <= maxDenominator; d++) {
                 for (let n = 1; n < d; n++) {
                     let suffix = (n > 1 && d !== 3) ? "s" : "";
                     let text = numWords[n] + " " + denWords[d] + suffix;
-                    fractionPool.push({ 
-                        num: n, 
-                        den: d, 
-                        value: n / d, // Utilisé pour vérifier l'équivalence
-                        text: text, 
-                        str: `${n}/${d}` 
-                    });
+                    fractionPool.push({ num: n, den: d, value: n / d, text: text, str: `${n}/${d}` });
                 }
             }
         }
@@ -263,6 +255,7 @@
         let gameTimeTotal = 120;
         let gameTimeLeft = 120;
         let timerInterval;
+        let animationFrameId;
 
         const PLAYER_W = 60, PLAYER_H = 50;
         const ASSETS = {
@@ -275,14 +268,8 @@
 
         const images = {};
         function loadImages() {
-            const load = (name, src) => {
-                const img = new Image();
-                img.src = src;
-                images[name] = img;
-            };
-            load('ship', ASSETS.ship);
-            load('laserPlayer', ASSETS.laserPlayer);
-            load('laserEnemy', ASSETS.laserEnemy);
+            const load = (name, src) => { const img = new Image(); img.src = src; images[name] = img; };
+            load('ship', ASSETS.ship); load('laserPlayer', ASSETS.laserPlayer); load('laserEnemy', ASSETS.laserEnemy);
             ASSETS.meteors.forEach((src, i) => load(`meteor${i}`, src));
             ASSETS.enemies.forEach((src, i) => load(`enemy${i}`, src));
         }
@@ -296,8 +283,7 @@
 
         function playSound(type) {
             if (!audioCtx) return;
-            const osc = audioCtx.createOscillator();
-            const gain = audioCtx.createGain();
+            const osc = audioCtx.createOscillator(); const gain = audioCtx.createGain();
             osc.connect(gain); gain.connect(audioCtx.destination);
             const now = audioCtx.currentTime;
 
@@ -314,13 +300,13 @@
                 osc.type = 'sine'; osc.frequency.setValueAtTime(400, now); osc.frequency.setValueAtTime(600, now + 0.1); osc.frequency.setValueAtTime(800, now + 0.2);
                 gain.gain.setValueAtTime(0.1, now); gain.gain.linearRampToValueAtTime(0, now + 0.4); osc.start(now); osc.stop(now + 0.4);
             } else if (type === 'wrong') {
-                osc.type = 'sawtooth'; osc.frequency.setValueAtTime(200, now); osc.frequency.linearRampToValueAtTime(100, now + 0.3);
-                gain.gain.setValueAtTime(0.1, now); gain.gain.linearRampToValueAtTime(0, now + 0.3); osc.start(now); osc.stop(now + 0.3);
+                osc.type = 'sawtooth'; osc.frequency.setValueAtTime(200, now); osc.frequency.linearRampToValueAtTime(100, now + 0.4);
+                gain.gain.setValueAtTime(0.2, now); gain.gain.linearRampToValueAtTime(0, now + 0.4); osc.start(now); osc.stop(now + 0.4);
             }
         }
 
         let ship = { x: 0, y: 0, w: PLAYER_W, h: PLAYER_H, speed: 8 };
-        let playerLasers = []; let enemyLasers = []; let meteors = []; let enemies = []; let hearts = []; let answerBoxes = []; let particles = []; let stars = []; let floatingTexts = [];
+        let playerLasers = [], enemyLasers = [], meteors = [], enemies = [], hearts = [], answerBoxes = [], particles = [], stars = [], floatingTexts = [];
 
         const overlay = document.getElementById('overlay');
         const scoreEl = document.getElementById('score');
@@ -361,16 +347,17 @@
             for(let i=0; i<100; i++) stars.push({ x: Math.random() * canvas.width, y: Math.random() * canvas.height, size: Math.random() * 2, speed: Math.random() * 2 + 0.5 });
         }
 
+        function spawnFloatingText(x, y, text, color) {
+            // Texte qui monte doucement
+            floatingTexts.push({ x: x, y: y, text: text, color: color, life: 1.0, vy: -1.5 });
+        }
+
         function generateQuestion() {
             questionActive = true;
             currentTarget = fractionPool[Math.floor(Math.random() * fractionPool.length)];
-            
             const showText = Math.random() > 0.5;
             questionMath.innerText = showText ? currentTarget.text.toUpperCase() : currentTarget.str;
-
-            const visTypes = ['pie', 'rect'];
-            currentVisType = visTypes[Math.floor(Math.random() * visTypes.length)];
-
+            currentVisType = ['pie', 'rect'][Math.floor(Math.random() * 2)];
             spawnAnswerBoxes();
         }
 
@@ -378,10 +365,8 @@
             answerBoxes = [];
             let answers = [currentTarget];
             
-            // On s'assure que les mauvaises réponses ne sont pas des équivalents
             while (answers.length < 4) {
                 let fake = fractionPool[Math.floor(Math.random() * fractionPool.length)];
-                // Un choix est "mauvais" s'il n'a pas la même valeur décimale
                 if (!answers.some(a => Math.abs(a.value - fake.value) < 0.001)) {
                     answers.push(fake);
                 }
@@ -389,16 +374,20 @@
 
             answers.sort(() => Math.random() - 0.5);
 
+            // Agrandissement des rectangles de propositions
             const zoneWidth = canvas.width / 4;
+            const boxW = Math.min(140, zoneWidth - 10); // Plus gros, s'adapte à l'écran
+            const boxH = boxW * 1.2;
+
             for (let i = 0; i < 4; i++) {
                 answerBoxes.push({
-                    x: i * zoneWidth + (zoneWidth - 80) / 2, 
-                    y: -150,
-                    w: 80,
-                    h: 100,
+                    x: i * zoneWidth + (zoneWidth - boxW) / 2, 
+                    y: -200, // Commence plus haut à cause de la taille
+                    w: boxW,
+                    h: boxH,
                     fraction: answers[i],
                     color: `hsla(${Math.random() * 360}, 70%, 60%, 0.4)`,
-                    speed: 0.8 
+                    speed: 1.0 
                 });
             }
         }
@@ -408,8 +397,44 @@
             playerLasers.push({ x: ship.x + ship.w/2 - 4.5, y: ship.y, w: 9, h: 37 }); playSound('shoot');
         }
 
+        function takeDamage(pointsLost, sourceX, sourceY) {
+            lives--; updateLivesUI(); playSound('hit');
+            
+            if (pointsLost > 0) {
+                score = Math.max(0, score - pointsLost);
+                spawnFloatingText(sourceX, sourceY, `-${pointsLost}`, "#ef4444"); // Rouge vif
+            }
+
+            createExplosion(ship.x + ship.w/2, ship.y + ship.h/2, '#3b82f6');
+            if (lives <= 0) endGame("VAISSEAU DÉTRUIT");
+        }
+
+        function triggerCorrection() {
+            gameState = 'CORRECTION';
+            correctionTimer = 180; // Met en pause l'action pendant ~3 secondes (à 60fps)
+            playSound('wrong');
+        }
+
         function update() {
-            if (gameState !== 'PLAYING') return;
+            if (gameState !== 'PLAYING' && gameState !== 'CORRECTION') return;
+
+            // Mise à jour continue des particules et textes même en correction
+            stars.forEach(s => { s.y += s.speed; if(s.y > canvas.height) { s.y = 0; s.x = Math.random() * canvas.width; } });
+            particles.forEach((p, i) => { p.x += p.vx; p.y += p.vy; p.life -= 0.05; if(p.life <= 0) particles.splice(i, 1); });
+            floatingTexts.forEach((t, i) => { t.y += t.vy; t.life -= 0.012; if(t.life <= 0) floatingTexts.splice(i, 1); });
+
+            if (gameState === 'CORRECTION') {
+                correctionTimer--;
+                if (correctionTimer <= 0) {
+                    gameState = 'PLAYING';
+                    answerBoxes = [];
+                    questionActive = false;
+                    generateQuestion();
+                }
+                return; // On arrête l'update du vaisseau et des ennemis ici
+            }
+
+            // --- LOGIQUE DE JEU NORMAL (PLAYING) ---
 
             if (keys['ArrowLeft']) ship.x -= ship.speed;
             if (keys['ArrowRight']) ship.x += ship.speed;
@@ -419,8 +444,6 @@
             if (ship.x < 0) ship.x = 0; if (ship.x > canvas.width - ship.w) ship.x = canvas.width - ship.w;
             if (ship.y < 0) ship.y = 0; if (ship.y > canvas.height - ship.h) ship.y = canvas.height - ship.h;
 
-            stars.forEach(s => { s.y += s.speed; if(s.y > canvas.height) { s.y = 0; s.x = Math.random() * canvas.width; } });
-
             // Collisions Lasers
             for (let i = playerLasers.length - 1; i >= 0; i--) {
                 const l = playerLasers[i]; l.y -= 12;
@@ -429,65 +452,99 @@
                 let hit = false;
                 for (let j = enemies.length - 1; j >= 0; j--) {
                     if (rectIntersect(l, enemies[j])) {
-                        createExplosion(enemies[j].x + 30, enemies[j].y + 30, '#ef4444');
-                        enemies.splice(j, 1); playerLasers.splice(i, 1); hit = true; score += 10; playSound('explosion'); break;
+                        createExplosion(enemies[j].x + enemies[j].w/2, enemies[j].y + enemies[j].h/2, '#ef4444');
+                        score += 10; 
+                        spawnFloatingText(enemies[j].x + enemies[j].w/2, enemies[j].y, "+10", "#4ade80"); // Vert vif
+                        enemies.splice(j, 1); playerLasers.splice(i, 1); hit = true; playSound('explosion'); break;
                     }
                 }
                 if(hit) continue;
                 for (let j = meteors.length - 1; j >= 0; j--) {
                     if (rectIntersect(l, meteors[j])) {
                         createExplosion(meteors[j].x + meteors[j].w/2, meteors[j].y + meteors[j].h/2, '#a8a29e');
-                        meteors.splice(j, 1); playerLasers.splice(i, 1); score += 5; playSound('explosion'); break;
+                        score += 5;
+                        spawnFloatingText(meteors[j].x + meteors[j].w/2, meteors[j].y, "+5", "#4ade80");
+                        meteors.splice(j, 1); playerLasers.splice(i, 1); playSound('explosion'); break;
                     }
                 }
             }
 
-            // Mouvements Objets
-            enemies.forEach((e, i) => { e.y += e.speed; if(e.y > canvas.height) enemies.splice(i, 1); if(rectIntersect(e, ship)) { takeDamage(); enemies.splice(i, 1); }});
-            meteors.forEach((m, i) => { m.y += m.speed; m.angle += m.rotSpeed; if(m.y > canvas.height) meteors.splice(i, 1); if(rectIntersect(m, ship)) { takeDamage(); meteors.splice(i, 1); }});
-            hearts.forEach((h, i) => { h.y += h.speed; if(rectIntersect({x:h.x, y:h.y, w:30, h:30}, ship)) { lives = Math.min(lives+1, 8); updateLivesUI(); hearts.splice(i, 1); playSound('correct'); }});
+            // Mouvements Ennemis & Météores (dégâts au contact)
+            enemies.forEach((e, i) => { 
+                e.y += e.speed; 
+                e.x += e.vx || 0;
+                
+                // Rebond sur les bords pour le mouvement latéral
+                if (e.x <= 0 || e.x >= canvas.width - e.w) {
+                    e.vx *= -1;
+                    e.x = Math.max(0, Math.min(e.x, canvas.width - e.w));
+                }
 
-            // LOGIQUE DE COLLISION FRACTION (CORRIGÉE POUR L'ÉQUIVALENCE)
+                // Tirs ennemis (lasers rouges)
+                if (e.canShoot && Math.random() < 0.015) {
+                    enemyLasers.push({ x: e.x + e.w/2 - 4.5, y: e.y + e.h, w: 9, h: 37 });
+                }
+
+                if(e.y > canvas.height) enemies.splice(i, 1); 
+                else if(rectIntersect(e, ship)) { takeDamage(10, e.x + e.w/2, e.y + e.h/2); enemies.splice(i, 1); } // Perd 10 points
+            });
+
+            // Mise à jour et collision des lasers ennemis
+            for (let i = enemyLasers.length - 1; i >= 0; i--) {
+                const l = enemyLasers[i];
+                l.y += 6;
+                if (l.y > canvas.height) { enemyLasers.splice(i, 1); continue; }
+                if (rectIntersect(l, ship)) {
+                    takeDamage(10, ship.x + ship.w/2, ship.y + ship.h/2); // Perd 10 points et 1 vie
+                    enemyLasers.splice(i, 1);
+                }
+            }
+
+            meteors.forEach((m, i) => { 
+                m.y += m.speed; m.angle += m.rotSpeed; 
+                if(m.y > canvas.height) meteors.splice(i, 1); 
+                else if(rectIntersect(m, ship)) { takeDamage(5, m.x + m.w/2, m.y + m.h/2); meteors.splice(i, 1); } // Perd 5 points
+            });
+            hearts.forEach((h, i) => { 
+                h.y += h.speed; 
+                if(rectIntersect({x:h.x, y:h.y, w:30, h:30}, ship)) { lives = Math.min(lives+1, 8); updateLivesUI(); hearts.splice(i, 1); playSound('correct'); }
+            });
+
+            // COLLISION AVEC LES FRACTIONS
             for (let i = answerBoxes.length - 1; i >= 0; i--) {
                 const box = answerBoxes[i];
                 box.y += box.speed;
 
                 if (rectIntersect(ship, box)) {
-                    // Vérification de l'équivalence par la valeur décimale
                     const isEquivalent = Math.abs(box.fraction.value - currentTarget.value) < 0.001;
 
                     if (isEquivalent) {
-                        score += 50; playSound('correct'); 
+                        // Bonne réponse !
+                        score += 50; 
+                        playSound('correct'); 
                         showFeedback("BRAVO !", "green"); 
+                        spawnFloatingText(box.x + box.w/2, box.y, "+50", "#4ade80"); // Affichage des points gagnés
                         createExplosion(box.x + box.w/2, box.y + box.h/2, '#4ade80');
                         answerBoxes = []; questionActive = false; setTimeout(generateQuestion, 1000); break; 
                     } else {
-                        score = Math.max(0, score - 25); playSound('wrong'); 
-                        takeDamage(false); 
-                        showFeedback("ERREUR !", "red"); 
-                        answerBoxes = []; questionActive = false; setTimeout(generateQuestion, 2000); break;
+                        // Mauvaise réponse !
+                        score = Math.max(0, score - 25); 
+                        spawnFloatingText(box.x + box.w/2, box.y, "-25", "#ef4444"); // Affichage des points perdus
+                        triggerCorrection(); // Lance l'écran de feedback pédagogique
+                        break;
                     }
                 }
-                if (box.y > canvas.height) {
-                    // Si on a raté la bonne réponse (ou son équivalent)
-                    if (Math.abs(box.fraction.value - currentTarget.value) < 0.001) {
-                         answerBoxes = []; questionActive = false; setTimeout(generateQuestion, 1000); break;
-                    }
+                // Si la bonne réponse s'échappe en bas
+                if (box.y > canvas.height && Math.abs(box.fraction.value - currentTarget.value) < 0.001) {
+                    answerBoxes = []; questionActive = false; setTimeout(generateQuestion, 1000); break;
                 }
             }
 
             scoreEl.textContent = score;
-            particles.forEach((p, i) => { p.x += p.vx; p.y += p.vy; p.life -= 0.05; if(p.life <= 0) particles.splice(i, 1); });
         }
 
         function rectIntersect(r1, r2) {
             return !(r2.x > r1.x + r1.w || r2.x + r2.w < r1.x || r2.y > r1.y + r1.h || r2.y + r2.h < r1.y);
-        }
-
-        function takeDamage(fullExplosion = true) {
-            lives--; updateLivesUI(); playSound('hit');
-            if (fullExplosion) createExplosion(ship.x + ship.w/2, ship.y + ship.h/2, '#3b82f6');
-            if (lives <= 0) endGame("VAISSEAU DÉTRUIT");
         }
 
         function updateLivesUI() {
@@ -496,23 +553,26 @@
 
         function showFeedback(text, colorClass) {
             feedbackMsg.innerText = text; feedbackMsg.className = (colorClass === 'green') ? 'text-green' : 'text-red';
-            feedbackMsg.style.opacity = 1; setTimeout(() => { feedbackMsg.style.opacity = 0; }, 1800);
+            feedbackMsg.style.opacity = 1; setTimeout(() => { feedbackMsg.style.opacity = 0; }, 1500);
         }
 
         function createExplosion(x, y, color) {
             for(let i=0; i<15; i++) particles.push({ x: x, y: y, vx: (Math.random() - 0.5) * 10, vy: (Math.random() - 0.5) * 10, life: 1.0, color: color });
         }
 
+        // Dessin des fractions adaptatif
         function drawFractionShape(ctx, box) {
             const cx = box.x + box.w / 2;
             const cy = box.y + box.h / 2;
             const f = box.fraction;
             const vis = currentVisType;
-            ctx.strokeStyle = "white"; ctx.lineWidth = 2;
+            ctx.strokeStyle = "white"; ctx.lineWidth = 3;
             const solidColor = box.color.replace(/[^,]+(?=\))/, '1');
 
+            const scale = box.w / 140; // Scale relative à la largeur max définie
+
             if (vis === 'pie') {
-                const r = 25;
+                const r = 45 * scale; // Beaucoup plus grand
                 ctx.fillStyle = "rgba(255,255,255,0.2)";
                 ctx.beginPath(); ctx.arc(cx, cy, r, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
                 let startAngle = -Math.PI / 2;
@@ -524,9 +584,40 @@
                     ctx.lineTo(cx + Math.cos(startAngle + i*sliceAngle)*r, cy + Math.sin(startAngle + i*sliceAngle)*r); ctx.stroke();
                 }
             } else {
-                const rw = 50; const rh = 30; const rx = cx - rw/2; const ry = cy - rh/2;
+                const rw = 100 * scale; const rh = 60 * scale; // Beaucoup plus grand
+                const rx = cx - rw/2; const ry = cy - rh/2;
                 const partW = rw / f.den;
                 ctx.fillStyle = "rgba(255,255,255,0.2)"; ctx.fillRect(rx, ry, rw, rh); ctx.strokeRect(rx, ry, rw, rh);
+                ctx.fillStyle = solidColor; ctx.fillRect(rx, ry, partW * f.num, rh);
+                for(let i=1; i<f.den; i++) {
+                    ctx.beginPath(); ctx.moveTo(rx + i*partW, ry); ctx.lineTo(rx + i*partW, ry + rh); ctx.stroke();
+                }
+            }
+        }
+
+        // Méga Fraction pour l'écran de correction
+        function drawBigCorrectionFraction(ctx, cx, cy, f, vis) {
+            ctx.strokeStyle = "white"; ctx.lineWidth = 5;
+            const solidColor = "#4ade80"; // Vert pour la correction
+            const scale = Math.min(1.5, canvas.width / 400); // S'adapte au mobile
+
+            if (vis === 'pie') {
+                const r = 80 * scale;
+                ctx.fillStyle = "rgba(255,255,255,0.1)";
+                ctx.beginPath(); ctx.arc(cx, cy, r, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
+                let startAngle = -Math.PI / 2;
+                let sliceAngle = (Math.PI * 2) / f.den;
+                ctx.fillStyle = solidColor;
+                ctx.beginPath(); ctx.moveTo(cx, cy); ctx.arc(cx, cy, r, startAngle, startAngle + sliceAngle * f.num); ctx.closePath(); ctx.fill();
+                for(let i=0; i<f.den; i++) {
+                    ctx.beginPath(); ctx.moveTo(cx, cy);
+                    ctx.lineTo(cx + Math.cos(startAngle + i*sliceAngle)*r, cy + Math.sin(startAngle + i*sliceAngle)*r); ctx.stroke();
+                }
+            } else {
+                const rw = 200 * scale; const rh = 120 * scale;
+                const rx = cx - rw/2; const ry = cy - rh/2;
+                const partW = rw / f.den;
+                ctx.fillStyle = "rgba(255,255,255,0.1)"; ctx.fillRect(rx, ry, rw, rh); ctx.strokeRect(rx, ry, rw, rh);
                 ctx.fillStyle = solidColor; ctx.fillRect(rx, ry, partW * f.num, rh);
                 for(let i=1; i<f.den; i++) {
                     ctx.beginPath(); ctx.moveTo(rx + i*partW, ry); ctx.lineTo(rx + i*partW, ry + rh); ctx.stroke();
@@ -538,22 +629,71 @@
             ctx.fillStyle = '#050a14'; ctx.fillRect(0, 0, canvas.width, canvas.height);
             ctx.fillStyle = 'white'; stars.forEach(s => { ctx.beginPath(); ctx.arc(s.x, s.y, s.size, 0, Math.PI*2); ctx.fill(); });
 
-            if (gameState === 'PLAYING') {
+            if (gameState === 'PLAYING' || gameState === 'CORRECTION') {
                 meteors.forEach(m => {
                     ctx.save(); ctx.translate(m.x + m.w/2, m.y + m.h/2); ctx.rotate(m.angle);
                     if(images[m.imgKey]) ctx.drawImage(images[m.imgKey], -m.w/2, -m.h/2, m.w, m.h); ctx.restore();
                 });
                 enemies.forEach(e => { if(images[e.imgKey]) ctx.drawImage(images[e.imgKey], e.x, e.y, e.w, e.h); });
                 playerLasers.forEach(l => { if(images['laserPlayer']) ctx.drawImage(images['laserPlayer'], l.x, l.y, l.w, l.h); });
+                enemyLasers.forEach(l => { if(images['laserEnemy']) ctx.drawImage(images['laserEnemy'], l.x, l.y, l.w, l.h); });
                 if(images['ship']) ctx.drawImage(images['ship'], ship.x, ship.y, ship.w, ship.h);
+                
                 answerBoxes.forEach(box => {
-                    ctx.fillStyle = box.color; ctx.globalAlpha = 0.5; roundRect(ctx, box.x, box.y, box.w, box.h, 10, true, true); ctx.globalAlpha = 1.0; 
+                    ctx.fillStyle = box.color; ctx.globalAlpha = 0.5; roundRect(ctx, box.x, box.y, box.w, box.h, 15, true, true); ctx.globalAlpha = 1.0; 
                     drawFractionShape(ctx, box);
                 });
-                particles.forEach(p => { ctx.globalAlpha = p.life; ctx.fillStyle = p.color; ctx.beginPath(); ctx.arc(p.x, p.y, 4, 0, Math.PI*2); ctx.fill(); });
+                
+                particles.forEach(p => { ctx.globalAlpha = p.life; ctx.fillStyle = p.color; ctx.beginPath(); ctx.arc(p.x, p.y, 5, 0, Math.PI*2); ctx.fill(); });
                 ctx.globalAlpha = 1.0;
+
+                // Affichage des textes flottants (+10, -25, etc.) super visibles
+                floatingTexts.forEach(t => {
+                    ctx.globalAlpha = Math.max(0, t.life); 
+                    ctx.fillStyle = t.color; 
+                    ctx.font = "900 45px 'Segoe UI', Arial"; 
+                    ctx.textAlign = "center"; 
+                    ctx.lineWidth = 4;
+                    ctx.strokeStyle = "black"; // Contour noir pour lisibilité
+                    ctx.strokeText(t.text, t.x, t.y); 
+                    ctx.fillText(t.text, t.x, t.y); 
+                    ctx.globalAlpha = 1.0;
+                });
+
+                // ÉCRAN DE FEEDBACK EN CAS D'ERREUR
+                if (gameState === 'CORRECTION' && currentTarget) {
+                    ctx.fillStyle = "rgba(0, 0, 0, 0.85)";
+                    ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+                    // Affichage des points perdus
+                    ctx.fillStyle = "#ef4444";
+                    ctx.font = "bold " + Math.min(40, canvas.width/10) + "px Arial";
+                    ctx.textAlign = "center";
+                    ctx.fillText("- 25 POINTS", canvas.width/2, canvas.height/2 - 220);
+
+                    ctx.fillStyle = "#ef4444";
+                    ctx.font = "900 " + Math.min(60, canvas.width/6) + "px Arial";
+                    ctx.textAlign = "center";
+                    ctx.fillText("ERREUR !", canvas.width/2, canvas.height/2 - 160);
+
+                    ctx.fillStyle = "white";
+                    ctx.font = "bold " + Math.min(30, canvas.width/12) + "px Arial";
+                    ctx.fillText("Il fallait toucher :", canvas.width/2, canvas.height/2 - 90);
+
+                    // Affichage de la fraction en Chiffres + Lettres
+                    ctx.fillStyle = "#fbbf24";
+                    ctx.font = "900 " + Math.min(50, canvas.width/8) + "px Arial";
+                    ctx.fillText(`${currentTarget.str}  (${currentTarget.text.toUpperCase()})`, canvas.width/2, canvas.height/2 - 30);
+
+                    drawBigCorrectionFraction(ctx, canvas.width/2, canvas.height/2 + 100, currentTarget, currentVisType);
+                }
             }
-            requestAnimationFrame(draw);
+        }
+
+        function gameLoop() {
+            update();
+            draw();
+            animationFrameId = requestAnimationFrame(gameLoop);
         }
 
         function roundRect(ctx, x, y, width, height, radius, fill, stroke) {
@@ -566,13 +706,25 @@
         }
 
         function spawnObjects() {
-            if(gameState !== 'PLAYING') return;
+            if(gameState !== 'PLAYING') {
+                if(gameState !== 'GAMEOVER') setTimeout(spawnObjects, 100);
+                return;
+            }
             if(Math.random() < 0.02) {
                 const size = 40 + Math.random() * 40;
                 meteors.push({ x: Math.random() * (canvas.width - size), y: -60, w: size, h: size, imgKey: `meteor${Math.floor(Math.random()*3)}`, speed: 2+Math.random()*2, angle:0, rotSpeed: (Math.random()-0.5)*0.1 });
             }
             if(Math.random() < 0.01) {
-                enemies.push({ x: Math.random() * (canvas.width - 60), y: -60, w: 60, h: 60, imgKey: `enemy${Math.floor(Math.random()*3)}`, speed: 2+Math.random() });
+                enemies.push({ 
+                    x: Math.random() * (canvas.width - 60), 
+                    y: -60, 
+                    w: 60, 
+                    h: 60, 
+                    imgKey: `enemy${Math.floor(Math.random()*3)}`, 
+                    speed: 2+Math.random(),
+                    vx: (Math.random() - 0.5) * 4, // Mouvement latéral
+                    canShoot: Math.random() > 0.5 // 50% de chance d'être un tireur
+                });
             }
             if(Math.random() < 0.005) {
                 hearts.push({ x: Math.random() * (canvas.width - 30), y: -40, speed: 2 });
@@ -584,25 +736,30 @@
             if (e) e.preventDefault();
             initAudio();
             initFractionPool(maxDen);
-            score = 0; lives = 5; enemies = []; meteors = []; playerLasers = []; answerBoxes = [];
+            score = 0; lives = 5; enemies = []; meteors = []; playerLasers = []; enemyLasers = []; answerBoxes = []; floatingTexts = [];
             gameTimeLeft = gameTimeTotal;
             if(timerInterval) clearInterval(timerInterval);
             timerInterval = setInterval(() => {
-                gameTimeLeft--;
+                if (gameState === 'PLAYING') gameTimeLeft--; // Pause le chrono pendant la correction
                 timerBar.style.width = ((gameTimeLeft / gameTimeTotal) * 100) + '%';
                 if (gameTimeLeft <= 0) endGame("TEMPS ÉCOULÉ");
             }, 1000);
             updateLivesUI();
+            
             gameState = 'PLAYING';
             overlay.classList.add('hidden'); questionDisplay.classList.remove('hidden'); touchControls.classList.remove('hidden'); timerContainer.classList.remove('hidden');
+            
             generateQuestion();
             spawnObjects();
-            setInterval(update, 1000/60);
+            
+            if (animationFrameId) cancelAnimationFrame(animationFrameId);
+            gameLoop();
         }
 
         function endGame(reason) {
             gameState = 'GAMEOVER';
             clearInterval(timerInterval);
+            if (animationFrameId) cancelAnimationFrame(animationFrameId);
             document.getElementById('overlay-title').innerHTML = reason;
             document.getElementById('overlay-msg').innerHTML = `Score : <b>${score}</b><br>Choisis un niveau pour recommencer :`;
             overlay.classList.remove('hidden'); questionDisplay.classList.add('hidden'); touchControls.classList.add('hidden'); timerContainer.classList.add('hidden');
@@ -610,7 +767,8 @@
 
         document.getElementById('btn-lvl1').onclick = (e) => startGame(e, 4);
         document.getElementById('btn-lvl2').onclick = (e) => startGame(e, 8);
-        resize(); draw();
+        resize(); 
+        draw(); // Dessin initial pour l'arrière-plan
     </script>
 </body>
 </html>
